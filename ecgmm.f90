@@ -1,4 +1,6 @@
 module ecgmm
+use lfsr_mod
+use sorting
 !This is Fortran-90 implementation of ECGMM algorithm presented in:
 !Hao, J. et al. (2009).
 !Precision Measurements of the Cluster Red Sequence Using an Error-Corrected Gaussian Mixture Model.
@@ -15,6 +17,8 @@ implicit none
   real*8, parameter :: PI = 3.1415926535897932d0
   real*8, parameter :: SQRT_TWOPI = 2.506628274631d0
   real*8, parameter :: PARAM_PRECISION = 1d-6
+  integer, parameter :: MAX_BOOTSTRAP = 50
+  integer, parameter :: MAX_ITERATIONS = 1000 ! Unused
 
 contains
 
@@ -123,4 +127,69 @@ subroutine iterate_safe(m, y, delta, n, w, mu, sigma, iter)
       j = j + 1
     enddo
 end subroutine iterate_safe
+
+subroutine iterate_bootstrap(m, y, delta, n, w, mu, sigma, iter)
+  integer, intent(in) :: m ! Number of datapoints
+  integer, intent(in) :: n ! Number of gaussians
+  integer, intent(in) :: iter ! Maximum number of iterations allowed
+  real*8, intent(in) :: y(m), delta(m) ! Values and errors
+  real*8, intent(inout) :: w(n), mu(n), sigma(n) ! Weight, offset and width
+
+  integer i, j, k
+  integer mask(m, MAX_BOOTSTRAP)
+  integer isortedw(n)
+  real*8 x_w(n, MAX_BOOTSTRAP), x_mu(n, MAX_BOOTSTRAP), x_sigma(n, MAX_BOOTSTRAP)
+  real*8 t_w(n, MAX_BOOTSTRAP), t_mu(n, MAX_BOOTSTRAP), t_sigma(n, MAX_BOOTSTRAP)
+  real*8 p_zyt_out(m, n)
+  real*8 p_zyt_2(m, n), sum_p_zyt_2
+
+    call init_lfsr_time()
+    do i = 1, m
+      do j = 1, MAX_BOOTSTRAP
+        mask(i, j) = int(m*lfsr113() + 1)
+      enddo
+    enddo
+    do i = 1, MAX_BOOTSTRAP
+      x_w(:, i) = w(:)
+      x_mu(:, i) = mu(:)
+      x_sigma(:, i) = sigma(:)
+    enddo
+    j = 0
+    do while(j.le.iter)
+      do k = 1, MAX_BOOTSTRAP
+        call p_zyt(m, y, delta, n, x_w(:, k), x_mu(:, k), x_sigma(:, k), p_zyt_out)
+        do i = 1, n
+          ! Update to speed-up (A9) and (A11)
+          p_zyt_2(1:m, i) = p_zyt_out(mask(1:m, k), i)/( 1.0 + (delta(mask(1:m, k))/x_sigma(i, k))**2)
+        enddo
+        do i = 1, n
+          sum_p_zyt_2 = 1.0 / sum(p_zyt_2(:, i))
+          t_mu(i, k) = sum(y(mask(1:m, k))*p_zyt_2(:, i)) * sum_p_zyt_2 ! (A9)
+          t_sigma(i, k) = dsqrt(sum( (y(mask(1:m, k)) - x_mu(i, k))**2 * p_zyt_2(:, i)) * sum_p_zyt_2) ! (A11)
+          t_w(i, k) = sum(p_zyt_out(1:m, i))/dble(m) ! (A14)
+        enddo
+      enddo
+      ! Check if desired precision is reached (all |dA/A| < \delta)
+      if ((is_precise(n*MAX_BOOTSTRAP, x_w, t_w)).and. &
+          (is_precise(n*MAX_BOOTSTRAP, x_mu, t_mu)).and. &
+          (is_precise(n*MAX_BOOTSTRAP, x_sigma, t_sigma))) then
+        exit
+      endif
+      x_w = t_w
+      x_mu = t_mu
+      x_sigma = t_sigma
+      j = j + 1
+    enddo
+    do k = 1, MAX_BOOTSTRAP
+      call ssort_index(x_w(:, k), x_w(:, k), isortedw(:), n)
+      x_mu(:, k) = x_mu(isortedw(:), k)
+      x_sigma(:, k) = x_sigma(isortedw(:), k)
+    enddo
+    do i = 1, n
+      w(i) = sum(x_w(i, :))/dble(MAX_BOOTSTRAP)
+      mu(i) = sum(x_mu(i, :))/dble(MAX_BOOTSTRAP)
+      sigma(i) = sum(x_sigma(i, :))/dble(MAX_BOOTSTRAP)
+    enddo
+end subroutine iterate_bootstrap
+
 end module ecgmm
