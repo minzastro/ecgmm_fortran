@@ -19,6 +19,7 @@ implicit none
   real*8, parameter :: PARAM_PRECISION = 1d-6
   integer, parameter :: MAX_BOOTSTRAP = 50
   integer, parameter :: MAX_ITERATIONS = 1000 ! Unused
+  real, parameter :: MIN_SIGMA = 1e-10 ! Minimum value of sigma
 
 contains
 
@@ -42,32 +43,51 @@ subroutine p_zyt(m, y, delta, n, w, mu, sigma, p_zyt_out)
         p(i) = w(i)*get_p(y(j), (delta(j)**2 + sigma(i)**2), mu(i))
       enddo
       sump = 1./sum(p(:))
+      if (sump.gt.HUGE(1.0)) then ! For very small p's
+        sump = 1.
+      endif
       p_zyt_out(j, :) = p(:)*sump
     enddo
 end subroutine p_zyt
 
-subroutine iterate(m, y, delta, n, w, mu, sigma, iter)
-  integer, intent(in) :: m
-  integer, intent(in) :: n
-  integer, intent(in) :: iter
-  real*8, intent(in) :: y(m), delta(m)
-  real*8, intent(inout) :: w(n), mu(n), sigma(n)
-  integer i, j
-  real*8 t_w(n), t_mu(n), t_sigma(n)
+subroutine one_step(m, y, delta, n, w, mu, sigma, t_w, t_mu, t_sigma)
+  integer, intent(in) :: m ! Number of datapoints
+  integer, intent(in) :: n ! Number of gaussians
+  real*8, intent(in) :: y(m), delta(m) ! Values and errors
+  real*8, intent(in) :: w(n), mu(n), sigma(n) ! Weight, offset and width
+  real*8, intent(out) :: t_w(n), t_mu(n), t_sigma(n) ! Weight, offset and width
+  integer i
   real*8 p_zyt_out(m, n)
   real*8 p_zyt_2(m, n), sum_p_zyt_2
+  real*8 p_zyt_3(m, n)
+    call p_zyt(m, y, delta, n, w, mu, sigma, p_zyt_out)
+    do i = 1, n
+      ! Update to speed-up (A9) and (A11)
+      p_zyt_2(1:m, i) = p_zyt_out(1:m, i)/( 1.0 + (delta(1:m)/sigma(i))**2)
+      p_zyt_3(1:m, i) = p_zyt_out(1:m, i)/( 1.0 + (delta(1:m)/sigma(i))**2)**2
+    enddo
+    do i = 1, n
+      sum_p_zyt_2 = 1.0 / sum(p_zyt_2(:, i))
+      t_mu(i) = sum(y(:)*p_zyt_2(:, i)) * sum_p_zyt_2 ! (A9)
+      t_sigma(i) = dsqrt(sum( (y(:) - mu(i))**2 * p_zyt_3(:, i)) * sum_p_zyt_2) ! (A11)
+      if (t_sigma(i).lt.MIN_SIGMA) then ! To prevent overfitting...
+        t_sigma(i) = MIN_SIGMA
+      endif
+      t_w(i) = sum(p_zyt_out(1:m, i))/dble(m) ! (A14)
+    enddo
+end subroutine one_step
+
+subroutine iterate(m, y, delta, n, w, mu, sigma, iter)
+  integer, intent(in) :: m ! Number of datapoints
+  integer, intent(in) :: n ! Number of gaussians
+  integer, intent(in) :: iter
+  real*8, intent(in) :: y(m), delta(m) ! Values and errors
+  real*8, intent(inout) :: w(n), mu(n), sigma(n) ! Weight, offset and width
+  integer j
+  real*8 t_w(n), t_mu(n), t_sigma(n)
     do j = 1, iter
-        call p_zyt(m, y, delta, n, w, mu, sigma, p_zyt_out)
-        do i = 1, n
-          ! Update to speed-up (A9) and (A11)
-          p_zyt_2(1:m, i) = p_zyt_out(1:m, i)/( 1.0 + (delta(1:m)/sigma(i))**2)
-        enddo
-        do i = 1, n
-          sum_p_zyt_2 = 1.0 / sum(p_zyt_2(:, i))
-          t_mu(i) = sum(y(:)*p_zyt_2(:, i)) * sum_p_zyt_2 ! (A9)
-          t_sigma(i) = dsqrt(sum( (y(:) - mu(i))**2 * p_zyt_2(:, i)) * sum_p_zyt_2) ! (A11)
-          t_w(i) = sum(p_zyt_out(1:m, i))/dble(m) ! (A14)
-        enddo
+        call one_step(m, y, delta, n, w, mu, sigma, t_w, t_mu, t_sigma)
+        !write(33, *) w, mu, sigma, t_w, t_mu, t_sigma
         w = t_w
         mu = t_mu
         sigma = t_sigma
@@ -99,24 +119,11 @@ subroutine iterate_safe(m, y, delta, n, w, mu, sigma, iter)
   real*8, intent(in) :: y(m), delta(m) ! Values and errors
   real*8, intent(inout) :: w(n), mu(n), sigma(n) ! Weight, offset and width
 
-  integer i, j
+  integer j
   real*8 t_w(n), t_mu(n), t_sigma(n)
-  real*8 p_zyt_out(m, n)
-  real*8 p_zyt_2(m, n), sum_p_zyt_2
-
     j = 0
     do while(j.le.iter)
-      call p_zyt(m, y, delta, n, w, mu, sigma, p_zyt_out)
-      do i = 1, n
-        ! Update to speed-up (A9) and (A11)
-        p_zyt_2(1:m, i) = p_zyt_out(1:m, i)/( 1.0 + (delta(1:m)/sigma(i))**2)
-      enddo
-      do i = 1, n
-        sum_p_zyt_2 = 1.0 / sum(p_zyt_2(:, i))
-        t_mu(i) = sum(y(:)*p_zyt_2(:, i)) * sum_p_zyt_2 ! (A9)
-        t_sigma(i) = dsqrt(sum( (y(:) - mu(i))**2 * p_zyt_2(:, i)) * sum_p_zyt_2) ! (A11)
-        t_w(i) = sum(p_zyt_out(1:m, i))/dble(m) ! (A14)
-      enddo
+      call one_step(m, y, delta, n, w, mu, sigma, t_w, t_mu, t_sigma)
       ! Check if desired precision is reached (all |dA/A| < \delta)
       if ((is_precise(n, w, t_w)).and.(is_precise(n, mu, t_mu)).and.(is_precise(n, sigma, t_sigma))) then
         exit
@@ -140,8 +147,6 @@ subroutine iterate_bootstrap(m, y, delta, n, w, mu, sigma, iter)
   integer isortedw(n)
   real*8 x_w(n, MAX_BOOTSTRAP), x_mu(n, MAX_BOOTSTRAP), x_sigma(n, MAX_BOOTSTRAP)
   real*8 t_w(n, MAX_BOOTSTRAP), t_mu(n, MAX_BOOTSTRAP), t_sigma(n, MAX_BOOTSTRAP)
-  real*8 p_zyt_out(m, n)
-  real*8 p_zyt_2(m, n), sum_p_zyt_2
 
     call init_lfsr_time()
     do i = 1, m
@@ -157,17 +162,8 @@ subroutine iterate_bootstrap(m, y, delta, n, w, mu, sigma, iter)
     j = 0
     do while(j.le.iter)
       do k = 1, MAX_BOOTSTRAP
-        call p_zyt(m, y, delta, n, x_w(:, k), x_mu(:, k), x_sigma(:, k), p_zyt_out)
-        do i = 1, n
-          ! Update to speed-up (A9) and (A11)
-          p_zyt_2(1:m, i) = p_zyt_out(mask(1:m, k), i)/( 1.0 + (delta(mask(1:m, k))/x_sigma(i, k))**2)
-        enddo
-        do i = 1, n
-          sum_p_zyt_2 = 1.0 / sum(p_zyt_2(:, i))
-          t_mu(i, k) = sum(y(mask(1:m, k))*p_zyt_2(:, i)) * sum_p_zyt_2 ! (A9)
-          t_sigma(i, k) = dsqrt(sum( (y(mask(1:m, k)) - x_mu(i, k))**2 * p_zyt_2(:, i)) * sum_p_zyt_2) ! (A11)
-          t_w(i, k) = sum(p_zyt_out(1:m, i))/dble(m) ! (A14)
-        enddo
+        call one_step(m, y, delta, n, x_w(:, k), x_mu(:, k), x_sigma(:, k), &
+                      t_w(:, k), t_mu(:, k), t_sigma(:, k))
       enddo
       ! Check if desired precision is reached (all |dA/A| < \delta)
       if ((is_precise(n*MAX_BOOTSTRAP, x_w, t_w)).and. &
@@ -191,5 +187,38 @@ subroutine iterate_bootstrap(m, y, delta, n, w, mu, sigma, iter)
       sigma(i) = sum(x_sigma(i, :))/dble(MAX_BOOTSTRAP)
     enddo
 end subroutine iterate_bootstrap
+
+
+subroutine iterate_fixed(m, y, delta, n, w, mu, sigma, fixed, iter)
+  integer, intent(in) :: m ! Number of datapoints
+  integer, intent(in) :: n ! Number of gaussians
+  integer, intent(in) :: iter
+  real*8, intent(in) :: y(m), delta(m) ! Values and errors
+  logical, intent(in) :: fixed(3) ! Flags for varying w, mu and sigma
+  real*8, intent(inout) :: w(n), mu(n), sigma(n) ! Weight, offset and width
+  integer i, j
+  real*8 t_w(n), t_mu(n), t_sigma(n)
+        j = 0
+    do while(j.le.iter)
+        call one_step(m, y, delta, n, w, mu, sigma, t_w, t_mu, t_sigma)
+        !write(88, *) sigma, t_sigma
+      ! Check if desired precision is reached (all |dA/A| < \delta)
+        if ((is_precise(n, w, t_w).or.(fixed(1))).and. &
+            (is_precise(n, mu, t_mu).or.(fixed(2))).and. &
+            (is_precise(n, sigma, t_sigma).or.(fixed(3)))) then
+          exit
+        endif
+        if (.not.fixed(1)) then
+          w = t_w
+        endif
+        if (.not.fixed(2)) then
+          mu = t_mu
+        endif
+        if (.not.fixed(3)) then
+          sigma = t_sigma
+        endif
+        j = j + 1
+    enddo
+end subroutine iterate_fixed
 
 end module ecgmm
