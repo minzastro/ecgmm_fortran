@@ -6,7 +6,7 @@ Astrophysical Journal, 702(1), 745–758. [ADS record](http://adsabs.harvard.edu
 Go ahead and try:
 
 ```
-$ hg clone https://bitbucket.org/minzastro/ecgmm-fortran/wiki
+$ git clone https://github.com/minzastro/ecgmm_fortran
 ```
 
 It is designed to be used with Python via f2py.
