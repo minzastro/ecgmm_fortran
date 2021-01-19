@@ -3,6 +3,8 @@ This is Fortran-90 implementation of ECGMM algorithm presented in:
 Hao, J., Koester, B. P., Mckay, T. a., Rykoff, E. S., Rozo, E., Evrard, A., Annis, J., et al. (2009). Precision Measurements of the Cluster Red Sequence Using an Error-Corrected Gaussian Mixture Model. The 
 Astrophysical Journal, 702(1), 745–758. [ADS record](http://adsabs.harvard.edu/abs/2009ApJ...702..745H)
 
+See original python implementation: https://github.com/jgbrainstorm/ecgmm
+
 Go ahead and try:
 
 ```
